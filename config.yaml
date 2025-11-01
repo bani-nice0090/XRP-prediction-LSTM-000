@@ -1,0 +1,60 @@
+# config.yaml
+
+data:
+  sources:
+    - name: "polygon"
+      type: "stocks"
+      api_key: "YOUR_POLYGON_API_KEY" # User needs to replace this
+    - name: "coinbase"
+      type: "crypto"
+      websocket_url: "wss://ws-feed.pro.coinbase.com"
+    - name: "binance"
+      type: "crypto"
+      websocket_url: "wss://stream.binance.com:9443/ws/btcusdt@trade"
+  cache:
+    host: "localhost"
+    port: 6379
+
+nas:
+  search_space:
+    attention:
+      heads: [4, 8, 12]
+      dim: [128, 256, 512]
+      dropout: [0.1, 0.2]
+    conv1d:
+      filters: [32, 64, 128]
+      kernel: [3, 5, 7]
+      dilation: [1, 2, 4, 8]
+    tcn:
+      layers: [4, 6, 8]
+      channels: [64, 128, 256]
+    lstm:
+      units: [128, 256, 512]
+      bidirectional: [True, False]
+  n_generations: 50
+  population_size: 10
+
+meta_controller:
+  regime_detection:
+    n_components: 12
+
+feature_learner:
+  tft:
+    input_size: 8
+    hidden_size: 128
+    output_size: 64
+    attention_heads: 4
+  vae:
+    input_dim: 64
+    latent_dim: 32
+
+online_learner:
+  ewc_lambda: 0.1
+  replay_buffer_size: 10000
+
+risk_predictor:
+  quantiles: [0.05, 0.25, 0.5, 0.75, 0.95]
+
+experience_memory:
+  max_size: 1000000
+  embedding_dim: 128
