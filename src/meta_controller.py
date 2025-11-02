@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.mixture import GaussianMixture
-from nas_engine import NASEngine, DynamicModel
+from .nas_engine import NASEngine, DynamicModel
 
 
 class RegimeDetector:
@@ -128,9 +128,9 @@ class MetaController:
 # Example usage (for testing)
 if __name__ == '__main__':
     import yaml
-    from src.nas_engine import NASEngine
+    from nas_engine import NASEngine
 
-    with open("config.yaml", 'r') as f:
+    with open("../config.yaml", 'r') as f:
         config = yaml.safe_load(f)
 
     # Create a dummy NASEngine with a population

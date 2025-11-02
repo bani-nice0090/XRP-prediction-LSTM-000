@@ -14,6 +14,7 @@ data:
   cache:
     host: "localhost"
     port: 6379
+  historical_data_path: "historical_data.csv"
 
 nas:
   search_space:
@@ -33,6 +34,9 @@ nas:
       bidirectional: [True, False]
   n_generations: 50
   population_size: 10
+  eval:
+    lr: 0.001
+    epochs: 10
 
 meta_controller:
   regime_detection:

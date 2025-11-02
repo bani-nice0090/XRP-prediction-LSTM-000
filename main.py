@@ -5,20 +5,21 @@ import os
 import time
 import yaml
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from collections import deque
 
 # Import all the system components
-from data_engine import IntelligentDataEngine
-from nas_engine import NASEngine
-from meta_controller import MetaController
-from feature_learner import FeatureLearner
-from online_learner import OnlineLearner
-from risk_predictor import RiskAwarePredictor, PredictionOutput
-from experience_memory import ExperienceMemory, Experience
-from executor import TradingExecutor
-from utils import display_system_status
+from src.data_engine import IntelligentDataEngine
+from src.nas_engine import NASEngine
+from src.meta_controller import MetaController
+from src.feature_learner import FeatureLearner
+from src.online_learner import OnlineLearner
+from src.risk_predictor import RiskAwarePredictor, PredictionOutput
+from src.experience_memory import ExperienceMemory, Experience
+from src.executor import TradingExecutor
+from src.utils import display_system_status
 
 class ElitePredictionSystem:
     """
@@ -87,13 +88,51 @@ class ElitePredictionSystem:
             if self.accuracy_outcomes:
                 self.accuracy = sum(self.accuracy_outcomes) / len(self.accuracy_outcomes)
 
+    async def _initial_setup(self):
+        """Handles the initial training and setup of the models."""
+        self.log("Performing initial system setup...")
+
+        # 1. Train FeatureLearner
+        historical_data_df = pd.DataFrame(
+            self.data_engine.historical_data,
+            columns=[f'feature_{i}' for i in range(self.data_engine.historical_data.shape[1])]
+        )
+        # Add required columns for TimeSeriesDataSet
+        historical_data_df['time_idx'] = np.arange(len(historical_data_df))
+        historical_data_df['group'] = 0
+        historical_data_df['target'] = historical_data_df['feature_0'].shift(-1).fillna(0) # Dummy target
+
+        self.feature_learner.train(historical_data_df)
+        self.log("FeatureLearner trained.")
+
+        # 2. Run NAS to find best architectures
+        self.log("Starting NAS search...")
+        # We need featurized data for NAS
+        featurized_historical_data = self.feature_learner.extract_features(self.data_engine.historical_data)
+        # Append target column for training
+        nas_training_data = np.hstack([
+            featurized_historical_data,
+            historical_data_df['target'].values[len(historical_data_df) - len(featurized_historical_data):].reshape(-1, 1)
+        ])
+
+        self.nas_engine.search(nas_training_data, n_generations=self.config['nas']['n_generations'])
+        self.log(f"NAS search complete. Top architectures found: {len(self.nas_engine.population)}")
+
+        # 3. Re-initialize MetaController with the found architectures
+        self.meta_controller = MetaController(self.nas_engine, self.config)
+        self.log("MetaController updated with NAS population.")
+
+
     async def run(self):
         """The main execution loop of the system."""
-        self.log("Starting main system loop.")
+        # Perform initial setup if NAS population is empty
+        if not self.nas_engine.population:
+            await self._initial_setup()
 
+        self.log("Starting main system loop.")
         ui_task = asyncio.create_task(self._run_ui())
         data_buffer = []
-        buffer_size = 40
+        buffer_size = self.config['feature_learner']['tft']['input_size'] # Buffer size should match TFT input size
 
         async for market_data in self.data_engine.stream():
             try:
@@ -101,20 +140,19 @@ class ElitePredictionSystem:
 
                 start_time = time.time()
                 data_buffer.append(market_data)
-
-                # Check and update accuracy based on the latest price
                 await self._check_accuracy(market_data.price)
 
-                if len(data_buffer) < buffer_size: continue
+                if len(data_buffer) < buffer_size:
+                    continue
 
+                # Prepare raw data for feature extraction
                 raw_data_array = np.array([[md.price, md.volume, md.spread, md.order_imbalance, 0, 0, 0, 0] for md in data_buffer])
                 data_buffer.pop(0)
 
                 features = self.feature_learner.extract_features(raw_data_array)
-                if features.shape[0] == 0: continue # Not enough data to create a feature vector yet
 
                 self.current_regime = self.meta_controller.detect_regime(features)
-                model = self.meta_controller.select_.model(self.current_regime)
+                model = self.meta_controller.select_model(self.current_regime)
 
                 self.risk_predictor.base_model = model
                 prediction = self.risk_predictor.predict(features)
@@ -130,17 +168,9 @@ class ElitePredictionSystem:
                 self.latency = time.time() - start_time
                 self.log(f"New prediction. Sharpe: {prediction.sharpe_prediction:.2f}")
 
-                # Conceptual online learning
-                if hasattr(market_data, 'future_return'):
-                    label = np.array([market_data.future_return])
-                    self.online_learner.update((features, label))
-                    self.online_updates += 1
-
             except Exception as e:
                 self.error_count += 1
                 self.log(f"An error occurred: {e}", is_error=True)
-
-            await asyncio.sleep(1)
 
     async def _run_ui(self):
         """Runs the terminal display."""

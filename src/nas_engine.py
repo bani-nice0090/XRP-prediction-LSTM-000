@@ -119,37 +119,59 @@ class DynamicModel(nn.Module):
     def __init__(self, architecture: List[Tuple[str, Dict]], input_features: int, output_dim: int):
         super().__init__()
         self.layers = nn.ModuleList()
+        self.is_cnn_last = False
         current_dim = input_features
 
-        for layer_type, params in architecture:
+        for i, (layer_type, params) in enumerate(architecture):
+            is_last_layer = (i == len(architecture) - 1)
             if layer_type == 'attention':
                 self.layers.append(AttentionLayer(current_dim, params['heads'], params['dim']))
+                self.is_cnn_last = False
             elif layer_type == 'conv1d':
-                self.layers.append(nn.Conv1d(current_dim, params['filters'], params['kernel']))
+                self.layers.append(nn.Conv1d(1 if i==0 or self.is_cnn_last else current_dim, params['filters'], params['kernel']))
                 current_dim = params['filters']
+                self.is_cnn_last = True
             elif layer_type == 'tcn':
-                self.layers.append(TCNBlock(current_dim, params['channels'], kernel_size=3, dilation=2))
+                self.layers.append(TCNBlock(1 if i==0 or self.is_cnn_last else current_dim, params['channels'], kernel_size=3, dilation=2))
                 current_dim = params['channels']
+                self.is_cnn_last = True
             elif layer_type == 'lstm':
                 self.layers.append(nn.LSTM(current_dim, params['units'], batch_first=True, bidirectional=params['bidirectional']))
                 current_dim = params['units'] * (2 if params['bidirectional'] else 1)
+                self.is_cnn_last = False
 
-        self.out = nn.Linear(current_dim, output_dim)
+        # Determine the input size for the final linear layer dynamically
+        with torch.no_grad():
+            dummy_input = torch.randn(1, input_features)
+            final_dim = self._get_final_dim(dummy_input)
 
-    def forward(self, x):
+        self.out = nn.Linear(final_dim, output_dim)
+
+    def _get_final_dim(self, x):
+        x = self.forward_features(x)
+        return x.shape[1]
+
+    def forward_features(self, x):
         for layer in self.layers:
-            if isinstance(layer, (nn.LSTM, AttentionLayer)):
-                if x.ndim == 2: x = x.unsqueeze(1) # Add sequence dim
-            elif isinstance(layer, (nn.Conv1d, TCNBlock)):
-                if x.ndim == 2: x = x.unsqueeze(-1) # Add channel dim
-                if x.shape[1] != layer.conv1.in_channels:
-                    x = x.transpose(1, 2)
+            if isinstance(layer, (nn.Conv1d, TCNBlock)):
+                if x.ndim == 2:
+                    x = x.unsqueeze(1) # Add channel dimension
+            elif isinstance(layer, (nn.LSTM, AttentionLayer)):
+                if x.ndim == 3 and x.shape[1] == 1:
+                    x = x.squeeze(1) # Remove channel dimension
+                if x.ndim == 2:
+                    x = x.unsqueeze(1) # Add sequence dimension
 
             x, *_ = layer(x)
-            if isinstance(layer, nn.LSTM) and x.ndim == 3: x = x[:, -1, :] # Take last output
-            if isinstance(layer, (nn.Conv1d, TCNBlock)): x = x.transpose(1, 2)
 
-        return self.out(x.squeeze())
+            if isinstance(layer, nn.LSTM):
+                x = x[:, -1, :] # Take last output
+
+        return x.reshape(x.size(0), -1)
+
+    def forward(self, x):
+        x = self.forward_features(x)
+        return self.out(x)
 
 
 class NASEngine:
@@ -179,35 +201,66 @@ class NASEngine:
         ray.shutdown()
 
     def _parallel_evaluate(self, architectures: List[List[Tuple]], data_ref) -> List[float]:
-        futures = [self._evaluate_architecture.remote(arch, data_ref) for arch in architectures]
+        config_ref = ray.put(self.config)
+        futures = [self._evaluate_architecture.remote(arch, data_ref, config_ref) for arch in architectures]
         return ray.get(futures)
 
     @staticmethod
     @ray.remote
-    def _evaluate_architecture(architecture: List[Tuple], data_ref) -> float:
-        data = ray.get(data_ref)
-        X, y = data[:, :-1], data[:, -1]
-        X = torch.from_numpy(X).float()
-        y = torch.from_numpy(y).float()
+    def _evaluate_architecture(architecture: List[Tuple], data: np.ndarray, config: Dict) -> float:
+        if data.shape[0] < 20: # Need enough data for split
+            return 0.0
+
+        # 1. Data Splitting
+        train_size = int(len(data) * 0.8)
+        train_data, val_data = data[:train_size], data[train_size:]
+        X_train, y_train = torch.from_numpy(train_data[:, :-1]).float(), torch.from_numpy(train_data[:, -1]).float()
+        X_val, y_val = torch.from_numpy(val_data[:, :-1]).float(), torch.from_numpy(val_data[:, -1]).float()
 
         try:
-            model = DynamicModel(architecture, X.shape[1], 1)
-            optimizer = optim.Adam(model.parameters(), lr=1e-3)
+            # 2. Model Training
+            model = DynamicModel(architecture, X_train.shape[1], 1)
+            optimizer = optim.Adam(model.parameters(), lr=config['nas']['eval']['lr'])
             loss_fn = nn.MSELoss()
 
-            # Train for a few epochs
-            for _ in range(3):
-                preds = model(X)
-                loss = loss_fn(preds.squeeze(), y)
+            for _ in range(config['nas']['eval']['epochs']):
+                preds = model(X_train)
+                loss = loss_fn(preds.squeeze(), y_train)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-            # Simple reward: inverse of final loss
-            return 1.0 / (loss.item() + 1e-6)
-        except (RuntimeError, IndexError) as e:
+            # 3. Backtesting and Metrics Calculation
+            with torch.no_grad():
+                start_time = time.time()
+                val_preds = model(X_val).squeeze()
+                latency = (time.time() - start_time) / len(X_val)
+
+            returns = val_preds * y_val # Simplified backtest: prediction * actual return direction
+
+            # Sharpe Ratio
+            sharpe_ratio = 0.0
+            if torch.std(returns) > 1e-6:
+                sharpe_ratio = torch.mean(returns) / torch.std(returns)
+
+            # Directional Accuracy
+            correct_direction = (torch.sign(val_preds) == torch.sign(y_val)).sum().item()
+            accuracy = correct_direction / len(y_val) if len(y_val) > 0 else 0.0
+
+            # 4. Performance Measurement
+            num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            # Use log to prevent extreme values, add 1 to avoid log(0)
+            memory_proxy = np.log(num_params + 1)
+
+            # 5. Final Reward Calculation
+            # Add small epsilons to avoid division by zero
+            reward = (sharpe_ratio * accuracy) / (latency + memory_proxy + 1e-9)
+
+            return float(reward)
+
+        except (RuntimeError, IndexError, ValueError) as e:
             # Penalize architectures that fail to build or run
-            return 0.01
+            return -1.0 # Return a negative reward for failed models
 
     def _evolve_population(self, archs: List, rewards: List) -> List:
         combined = sorted(self.population + list(zip(archs, rewards)), key=lambda x: x[1], reverse=True)

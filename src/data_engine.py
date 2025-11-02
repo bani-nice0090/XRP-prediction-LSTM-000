@@ -94,37 +94,26 @@ class IntelligentDataEngine:
             sources[source["name"]] = source
         return sources
 
-    def _train_quality_scorer(self) -> IsolationForest:
+    def _train_quality_scorer(self):
         """
-        Trains a model to score data quality.
-
-        Returns:
-            A trained IsolationForest model.
+        Placeholder for a quality scoring model.
+        In this version, we use a rule-based validator instead.
         """
-        # Generate some dummy data for training
-        X = np.random.rand(1000, 5)
-        # Add some anomalies
-        X = np.vstack([X, np.random.rand(50, 5) * 10])
+        return None
 
-        model = IsolationForest(contamination=0.05, random_state=42)
-        model.fit(X)
-        return model
-
-    def _load_historical_data(self, n_samples: int = 10000, n_features: int = 5) -> np.ndarray:
+    def _load_historical_data(self) -> np.ndarray:
         """
-        Loads historical data for drift detection.
-
-        In a real system, this would load data from a database or file.
-        Here, we generate synthetic data for demonstration.
-
-        Args:
-            n_samples: The number of samples to generate.
-            n_features: The number of features to generate.
-
-        Returns:
-            A NumPy array of historical data.
+        Loads historical data for drift detection from a CSV file.
         """
-        return np.random.randn(n_samples, n_features)
+        filepath = self.config["data"]["historical_data_path"]
+        try:
+            df = pl.read_csv(filepath)
+            # Assuming the CSV contains columns for features
+            return df.to_numpy()
+        except FileNotFoundError:
+            console.log(f"[bold red]Warning:[/bold red] Historical data file not found at {filepath}. Drift detection will be impaired.")
+            # Return a small, empty-like array to avoid crashes downstream
+            return np.empty((0, 5)) # Assuming 5 features as before
 
     async def stream(self) -> AsyncGenerator[MarketData, None]:
         """
@@ -253,8 +242,7 @@ class IntelligentDataEngine:
             parsed.setdefault("bid", parsed["price"] * 0.9999)
             parsed.setdefault("ask", parsed["price"] * 1.0001)
 
-            df = pl.DataFrame([parsed])
-            quality_score = self.validate_quality(df)
+            quality_score = self.validate_quality(parsed)
 
             if quality_score < 0.5:
                 return None
@@ -274,29 +262,30 @@ class IntelligentDataEngine:
         except (json.JSONDecodeError, KeyError, TypeError):
             return None
 
-    def validate_quality(self, data: pl.DataFrame) -> float:
+    def validate_quality(self, data: Dict) -> float:
         """
-        Scores data quality using a learned model.
-        Checks: completeness, consistency, timeliness, anomalies.
-
-        Args:
-            data: A Polars DataFrame of market data.
-
-        Returns:
-            A quality score between 0 and 1.
+        Scores data quality using a rule-based system.
+        Returns a score between 0.0 (bad) and 1.0 (good).
         """
-        # This is a simplified quality check.
-        # A real system would have more sophisticated checks.
-        features = data.select(pl.all().is_numeric()).to_numpy()
-        if features.shape[1] < self.quality_model.n_features_in_:
-            # Pad features if necessary (e.g., if some columns are missing)
-             padding = np.zeros((features.shape[0], self.quality_model.n_features_in_ - features.shape[1]))
-             features = np.hstack([features, padding])
+        score = 1.0
 
+        # Rule 1: Prices, bids, and asks must be positive
+        if data.get("price", 0) <= 0 or data.get("bid", 0) <= 0 or data.get("ask", 0) <= 0:
+            score -= 0.5
 
-        score = self.quality_model.score_samples(features)
-        # Normalize score to be between 0 and 1
-        return (score - score.min()) / (score.max() - score.min()) if (score.max() - score.min()) > 0 else 0.5
+        # Rule 2: Spread should not be negative
+        if data.get("ask", 0) < data.get("bid", 0):
+            score -= 0.5
+
+        # Rule 3: Volume must not be negative
+        if data.get("volume", 0) < 0:
+            score -= 0.2
+
+        # Rule 4: Spread shouldn't be excessively large (e.g., >1% of price)
+        if (data.get("ask", 0) - data.get("bid", 0)) > data.get("price", 1) * 0.01:
+            score -= 0.2
+
+        return max(0.0, score)
 
 
     def detect_drift(self, recent: np.ndarray, historical: np.ndarray) -> float:

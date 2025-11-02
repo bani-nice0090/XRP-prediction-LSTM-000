@@ -5,7 +5,7 @@ from typing import List, Dict
 
 import faiss
 import numpy as np
-from risk_predictor import PredictionOutput
+from .risk_predictor import PredictionOutput
 
 
 @dataclass
@@ -86,9 +86,9 @@ class ExperienceMemory:
 # Example usage (for testing)
 if __name__ == '__main__':
     import yaml
-    from src.risk_predictor import PredictionOutput
+    from risk_predictor import PredictionOutput
 
-    with open("config.yaml", 'r') as f:
+    with open("../config.yaml", 'r') as f:
         config = yaml.safe_load(f)
 
     memory = ExperienceMemory(config)
