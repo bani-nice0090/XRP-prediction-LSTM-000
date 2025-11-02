@@ -1,6 +1,7 @@
 # src/utils.py
 
 import time
+from collections import deque
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
@@ -25,6 +26,16 @@ def create_status_table(system: 'ElitePredictionSystem') -> Table:
     table.add_row("  - Ticks per Second", "1,234,567")
     table.add_row("  - Data Quality", "0.98")
 
+    # --- Performance ---
+    table.add_row("[bold]Performance[/bold]", "")
+    latency = getattr(system, 'latency', 0.0)
+    accuracy = getattr(system, 'accuracy', 0.0)
+    errors = getattr(system, 'error_count', 0)
+    table.add_row("  - Latency (ms)", f"{latency * 1000:.2f}")
+    table.add_row("  - Accuracy", f"{accuracy:.2%}")
+    table.add_row("  - Errors", f"[red]{errors}[/red]" if errors > 0 else "[green]0[/green]")
+
+
     # --- Prediction ---
     table.add_row("[bold]Last Prediction[/bold]", "")
     if hasattr(system, 'last_prediction') and system.last_prediction:
@@ -48,13 +59,12 @@ def create_status_table(system: 'ElitePredictionSystem') -> Table:
 
     return table
 
-def create_log_panel(system: 'ElitePredictionSystem') -> Panel:
+def create_log_panel(log_messages: deque) -> Panel:
     """Creates a panel to display recent log messages."""
-    log_messages = getattr(system, 'log_messages', ["Initializing..."])
     log_text = "\n".join(log_messages)
     return Panel(Text(log_text, style="white"), title="Logs", border_style="blue")
 
-def display_system_status(system: 'ElitePredictionSystem'):
+def display_system_status(system: 'ElitePredictionSystem', log_messages: deque):
     """
     Creates and displays a real-time terminal dashboard.
     """
@@ -81,5 +91,5 @@ def display_system_status(system: 'ElitePredictionSystem'):
             layout["status"].update(
                 Panel(create_status_table(system), title="System Status", border_style="green")
             )
-            layout["logs"].update(create_log_panel(system))
+            layout["logs"].update(create_log_panel(log_messages))
             time.sleep(0.5)

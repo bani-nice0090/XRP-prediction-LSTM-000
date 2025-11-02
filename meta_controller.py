@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.mixture import GaussianMixture
-from src.nas_engine import NASEngine, DynamicModel
+from nas_engine import NASEngine, DynamicModel
 
 
 class RegimeDetector:

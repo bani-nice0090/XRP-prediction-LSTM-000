@@ -5,6 +5,8 @@ from typing import List, Dict
 
 import faiss
 import numpy as np
+from risk_predictor import PredictionOutput
+
 
 @dataclass
 class Experience:
@@ -12,7 +14,7 @@ class Experience:
     Represents a single experience to be stored in memory.
     """
     market_state_embedding: np.ndarray
-    prediction: 'PredictionOutput' # Using string to avoid circular import
+    prediction: PredictionOutput
     outcome: float
     model_architecture: List[str]
     regime: str

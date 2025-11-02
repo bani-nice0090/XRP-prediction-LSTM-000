@@ -13,13 +13,13 @@ import torch.nn as nn
 import sys
 sys.path.insert(0, '.')
 
-from src.data_engine import IntelligentDataEngine, MarketData
-from src.nas_engine import NASEngine
-from src.meta_controller import MetaController
-from src.feature_learner import FeatureLearner
-from src.online_learner import OnlineLearner
-from src.risk_predictor import RiskAwarePredictor
-from src.experience_memory import ExperienceMemory, Experience
+from data_engine import IntelligentDataEngine, MarketData
+from nas_engine import NASEngine
+from meta_controller import MetaController
+from feature_learner import FeatureLearner
+from online_learner import OnlineLearner
+from risk_predictor import RiskAwarePredictor
+from experience_memory import ExperienceMemory, Experience
 
 
 class TestEliteMLSystem(unittest.TestCase):

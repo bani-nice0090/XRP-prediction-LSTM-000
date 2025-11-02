@@ -1,7 +1,7 @@
 # src/executor.py
 
 from typing import Dict
-from src.risk_predictor import PredictionOutput
+from risk_predictor import PredictionOutput
 
 class TradingExecutor:
     """
